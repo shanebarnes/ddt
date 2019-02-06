@@ -70,7 +70,7 @@ func main() {
 func printStats(bytes int64, duration time.Duration) {
 	rate := int64(0)
 	if duration > 0 {
-		rate = bytes * int64(time.Second) / int64(time.Duration(duration))
+		rate = bytes / int64(time.Duration(duration) / time.Second)
 	}
 
 	fmt.Fprintf(os.Stdout, "Total: time=%s size=%s rate=%s/sec\n", duration, humanize.Bytes(uint64(bytes)), humanize.Bytes(uint64(rate)))
