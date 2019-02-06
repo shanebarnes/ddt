@@ -6,14 +6,15 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dustin/go-humanize"
 )
 
 func main() {
-	blockSize  := flag.Int("bs", 4096, "Set both input and output block size to n bytes")
-	count := flag.Int("count", 1, "Copy only n input blocks")
+	blockSize  := flag.Int64("bs", 4096, "Set both input and output block size to n bytes")
+	count := flag.Int64("count", 1, "Copy only n input blocks")
 	fileRd  := flag.String("if", "", "Read input from file instead of the standard input")
 	fileWr := flag.String("of", "", "Write output to file instead of the standard output")
 	threads := flag.Int("n", runtime.NumCPU(), "")
@@ -22,8 +23,8 @@ func main() {
 	validateFlags(*count, *fileRd, *fileWr, *threads)
 
 	fileSize := int64((*count) * (*blockSize))
-	req := make(chan int, *threads)
-	res := make(chan int, *threads)
+	req := make(chan int64, *threads)
+	res := make(chan int64, *threads)
 
 	for i := 0; i < *threads; i++ {
 		go worker(i+1, *fileRd, *fileWr, *blockSize, req, res)
@@ -31,10 +32,15 @@ func main() {
 
 	var wg sync.WaitGroup
 	wg.Add(1)
+	blocks := int64(0)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < *count; i++ {
-			<-res
+		for i := int64(0); i < *count; i++ {
+			n := <-res
+
+			if n >= 0 {
+				atomic.StoreInt64(&blocks, atomic.LoadInt64(&blocks) + 1)
+			}
 		}
 		close(res)
 		if writer, err := os.OpenFile(*fileWr, os.O_WRONLY|os.O_CREATE, 0755); err == nil {
@@ -44,24 +50,33 @@ func main() {
 		}
 	} ()
 
-	tStart := time.Now()
-	for i := 0; i < *count; i++ {
+	start := time.Now()
+	ticker := time.NewTicker(time.Millisecond * 1000)
+	go func() {
+		for range ticker.C {
+			printStats(atomic.LoadInt64(&blocks) * (*blockSize), time.Since(start))
+		}
+	} ()
+
+	for i := int64(0); i < *count; i++ {
 		req <- i
 	}
 	close(req)
 	wg.Wait()
-	tStop := time.Now()
-
-	duration := tStop.Sub(tStart)
-	rate := int64(0)
-	if duration > 0 {
-		rate = fileSize * int64(time.Second) / int64(time.Duration(duration))
-	}
-
-	fmt.Fprintf(os.Stdout, "Total: time=%s size=%s B rate=%s/sec\n", duration, humanize.Comma(fileSize), humanize.Bytes(uint64(rate)))
+	stop := time.Now()
+	printStats(fileSize, stop.Sub(start))
 }
 
-func validateFlags(count int, fileRd, fileWr string, threads int) {
+func printStats(bytes int64, duration time.Duration) {
+	rate := int64(0)
+	if duration > 0 {
+		rate = bytes * int64(time.Second) / int64(time.Duration(duration))
+	}
+
+	fmt.Fprintf(os.Stdout, "Total: time=%s size=%s rate=%s/sec\n", duration, humanize.Bytes(uint64(bytes)), humanize.Bytes(uint64(rate)))
+}
+
+func validateFlags(count int64, fileRd, fileWr string, threads int) {
 	if count < 1 {
 		panic("count < 1")
 	}
@@ -79,7 +94,7 @@ func validateFlags(count int, fileRd, fileWr string, threads int) {
 	}
 }
 
-func worker(id int, fileRd, fileWr string, blockSize int, req <-chan int, res chan<- int) {
+func worker(id int, fileRd, fileWr string, blockSize int64, req <-chan int64, res chan<- int64) {
 	var err error
 	var reader, writer *os.File
 
@@ -100,6 +115,6 @@ func worker(id int, fileRd, fileWr string, blockSize int, req <-chan int, res ch
 			n, err = writer.WriteAt(buf, int64(num*blockSize))
 		}
 		//fmt.Println("Worker #", id, "read block #", num, "of size", n)
-		res <- n
+		res <- int64(n)
 	}
 }
