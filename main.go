@@ -6,11 +6,17 @@ import (
 	"os"
 	"runtime"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/dustin/go-humanize"
 )
+
+type ddInfo struct {
+	RdBytes int64
+	RdDur   time.Duration
+	WrBytes int64
+	WrDur   time.Duration
+}
 
 func main() {
 	blockSize  := flag.Int64("bs", 4096, "Set both input and output block size to n bytes")
@@ -24,29 +30,49 @@ func main() {
 
 	fileSize := int64((*count) * (*blockSize))
 	req := make(chan int64, *threads)
-	res := make(chan int64, *threads)
+	res := make(chan *ddInfo, *threads)
 
+	var reader, writer *os.File
+	var err error
+	if reader, err = os.OpenFile(*fileRd, os.O_RDONLY, 0755); err != nil {
+		panic("reader")
+	}
+	defer reader.Close()
+
+	if writer, err = os.OpenFile(*fileWr, os.O_CREATE | os.O_WRONLY, 0755); err != nil {
+		panic("writer")
+	}
+	defer writer.Close()
 	for i := 0; i < *threads; i++ {
-		go worker(i+1, *fileRd, *fileWr, *blockSize, req, res)
+		go worker(i+1, reader, writer, *fileRd, *fileWr, *blockSize, req, res)
 	}
 
+	var mutex = &sync.Mutex{}
 	var wg sync.WaitGroup
 	wg.Add(1)
 	blocks := int64(0)
+	sum := ddInfo{}
+
 	go func() {
 		defer wg.Done()
 		for i := int64(0); i < *count; i++ {
-			n := <-res
+			ddi := <-res
 
-			if n >= 0 {
-				atomic.StoreInt64(&blocks, atomic.LoadInt64(&blocks) + 1)
+			if ddi.WrBytes >= 0 {
+				mutex.Lock()
+				blocks = blocks + 1
+				sum.RdBytes = sum.RdBytes + ddi.RdBytes
+				sum.RdDur = sum.RdDur + ddi.RdDur
+				sum.WrBytes = sum.WrBytes + ddi.WrBytes
+				sum.WrDur = sum.WrDur + ddi.WrDur
+				mutex.Unlock()
 			}
 		}
 		close(res)
 		if writer, err := os.OpenFile(*fileWr, os.O_WRONLY|os.O_CREATE, 0755); err == nil {
 			defer writer.Close()
 			writer.Truncate(fileSize)
-			writer.Sync()
+			//writer.Sync()
 		}
 	} ()
 
@@ -54,7 +80,12 @@ func main() {
 	ticker := time.NewTicker(time.Millisecond * 1000)
 	go func() {
 		for range ticker.C {
-			printStats(atomic.LoadInt64(&blocks) * (*blockSize), time.Since(start))
+			mutex.Lock()
+			tmpBlocks := blocks
+			tmpSum := sum
+			mutex.Unlock()
+
+			printStats(&tmpSum, tmpBlocks, time.Since(start))
 		}
 	} ()
 
@@ -64,16 +95,31 @@ func main() {
 	close(req)
 	wg.Wait()
 	stop := time.Now()
-	printStats(fileSize, stop.Sub(start))
+	printStats(&sum, blocks, stop.Sub(start))
 }
 
-func printStats(bytes int64, duration time.Duration) {
+func printStats(sum *ddInfo, blocks int64, duration time.Duration) {
 	rate := int64(0)
-	if duration > 0 {
-		rate = bytes / int64(time.Duration(duration) / time.Second)
+	sec := int64(time.Duration(duration) / time.Second)
+	if sec > 0 {
+		rate = sum.WrBytes / sec
 	}
 
-	fmt.Fprintf(os.Stdout, "Total: time=%s size=%s rate=%s/sec\n", duration, humanize.Bytes(uint64(bytes)), humanize.Bytes(uint64(rate)))
+	avgRdTime := time.Duration(0)
+	avgWrTime := time.Duration(0)
+	if blocks > 0 {
+		avgRdTime = sum.RdDur / time.Duration(blocks)
+		avgWrTime = sum.WrDur / time.Duration(blocks)
+	}
+
+	fmt.Fprintf(os.Stdout,
+		"Total: time=%s blocks=%d avg read/write=%s/%s size=%s rate=%s/sec\n",
+		duration,
+		blocks,
+		avgRdTime,
+		avgWrTime,
+		humanize.Bytes(uint64(sum.WrBytes)),
+		humanize.Bytes(uint64(rate)))
 }
 
 func validateFlags(count int64, fileRd, fileWr string, threads int) {
@@ -94,27 +140,22 @@ func validateFlags(count int64, fileRd, fileWr string, threads int) {
 	}
 }
 
-func worker(id int, fileRd, fileWr string, blockSize int64, req <-chan int64, res chan<- int64) {
+func worker(id int, reader, writer *os.File, fileRd, fileWr string, blockSize int64, req <-chan int64, res chan<- *ddInfo) {
 	var err error
-	var reader, writer *os.File
-
-	if reader, err = os.OpenFile(fileRd, os.O_RDONLY, 0755); err != nil {
-		panic("reader")
-	}
-	defer reader.Close()
-
-	if writer, err = os.OpenFile(fileWr, os.O_WRONLY|os.O_CREATE, 0755); err != nil {
-		panic("writer")
-	}
-	defer writer.Close()
 
 	buf := make([]byte, blockSize)
 	n := 0
 	for num := range req {
+		ddi := ddInfo{}
+		timeA := time.Now()
 		if n, err = reader.ReadAt(buf, int64(num*blockSize)); err == nil {
+			timeB := time.Now()
+			ddi.RdBytes = int64(n)
 			n, err = writer.WriteAt(buf, int64(num*blockSize))
+			ddi.WrDur = time.Since(timeB)
+			ddi.WrBytes = int64(n)
+			ddi.RdDur = timeB.Sub(timeA)
 		}
-		//fmt.Println("Worker #", id, "read block #", num, "of size", n)
-		res <- int64(n)
+		res <- &ddi
 	}
 }
