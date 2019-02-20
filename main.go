@@ -8,7 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dustin/go-humanize"
+	"github.com/shanebarnes/goto/tokenbucket"
+	"github.com/shanebarnes/goto/units"
 )
 
 type ddInfo struct {
@@ -19,16 +20,27 @@ type ddInfo struct {
 }
 
 func main() {
-	blockSize  := flag.Int64("bs", 4096, "Set both input and output block size to n bytes")
+	blockSizeStr := flag.String("bs", "4Ki", "Set both input and output block size to n bytes")
 	count := flag.Int64("count", 1, "Copy only n input blocks")
 	fileRd  := flag.String("if", "", "Read input from file instead of the standard input")
 	fileWr := flag.String("of", "", "Write output to file instead of the standard output")
-	threads := flag.Int("n", runtime.NumCPU(), "")
+	rateBpsStr := flag.String("rate", "0", "Read rate limit in bits per second")
+	threads := flag.Int("threads", runtime.NumCPU(), "")
 
 	flag.Parse()
 	validateFlags(*count, *fileRd, *fileWr, *threads)
 
-	fileSize := int64((*count) * (*blockSize))
+	blockSize := int64(0)
+	if f, err := units.ToNumber(*blockSizeStr); err == nil {
+		blockSize = int64(f)
+	}
+
+	rateBps := uint64(0)
+	if f, err := units.ToNumber(*rateBpsStr); err == nil {
+		rateBps = uint64(f)
+	}
+
+	fileSize := int64((*count) * (blockSize))
 	req := make(chan int64, *threads)
 	res := make(chan *ddInfo, *threads)
 
@@ -44,7 +56,7 @@ func main() {
 	}
 	defer writer.Close()
 	for i := 0; i < *threads; i++ {
-		go worker(i+1, reader, writer, *fileRd, *fileWr, *blockSize, req, res)
+		go worker(i+1, reader, writer, *fileRd, *fileWr, blockSize, rateBps/(8*uint64(*threads)), req, res)
 	}
 
 	var mutex = &sync.Mutex{}
@@ -78,6 +90,7 @@ func main() {
 
 	start := time.Now()
 	ticker := time.NewTicker(time.Millisecond * 1000)
+	it := 0
 	go func() {
 		for range ticker.C {
 			mutex.Lock()
@@ -85,7 +98,8 @@ func main() {
 			tmpSum := sum
 			mutex.Unlock()
 
-			printStats(&tmpSum, tmpBlocks, time.Since(start))
+			printStats(it, &tmpSum, tmpBlocks, time.Since(start))
+			it = it + 1
 		}
 	} ()
 
@@ -95,10 +109,10 @@ func main() {
 	close(req)
 	wg.Wait()
 	stop := time.Now()
-	printStats(&sum, blocks, stop.Sub(start))
+	printStats(it, &sum, blocks, stop.Sub(start))
 }
 
-func printStats(sum *ddInfo, blocks int64, duration time.Duration) {
+func printStats(it int, sum *ddInfo, blocks int64, duration time.Duration) {
 	rate := int64(0)
 	sec := int64(time.Duration(duration) / time.Second)
 	if sec > 0 {
@@ -112,14 +126,25 @@ func printStats(sum *ddInfo, blocks int64, duration time.Duration) {
 		avgWrTime = sum.WrDur / time.Duration(blocks)
 	}
 
+	if it % 10 == 0 {
+		fmt.Fprintf(os.Stdout,
+			"%17s %7s %9s %9s %9s %9s\n",
+			"ELAPSED TIME",
+			"BLOCKS",
+			"AVG READ",
+			"AVG WRITE",
+			"SIZE",
+			"RATE")
+	}
+
 	fmt.Fprintf(os.Stdout,
-		"Total: time=%s blocks=%d avg read/write=%s/%s size=%s rate=%s/sec\n",
-		duration,
-		blocks,
-		avgRdTime,
-		avgWrTime,
-		humanize.Bytes(uint64(sum.WrBytes)),
-		humanize.Bytes(uint64(rate)))
+		"%17s %7s %9s %9s %9s %9s\n",
+		units.ToTimeString(float64(duration)/float64(time.Second)),
+		units.ToMetricString(float64(blocks), 3, "", ""),
+		units.ToMetricString(avgRdTime.Seconds(), 3, "", "s"),
+		units.ToMetricString(avgWrTime.Seconds(), 3, "", "s"),
+		units.ToMetricString(float64(sum.WrBytes), 3, "", "B"),
+		units.ToMetricString(float64(rate * 8), 3, "", "bps"))
 }
 
 func validateFlags(count int64, fileRd, fileWr string, threads int) {
@@ -140,14 +165,16 @@ func validateFlags(count int64, fileRd, fileWr string, threads int) {
 	}
 }
 
-func worker(id int, reader, writer *os.File, fileRd, fileWr string, blockSize int64, req <-chan int64, res chan<- *ddInfo) {
+func worker(id int, reader, writer *os.File, fileRd, fileWr string, blockSize int64, rate uint64, req <-chan int64, res chan<- *ddInfo) {
 	var err error
 
 	buf := make([]byte, blockSize)
 	n := 0
+	tb := tokenbucket.New(rate, uint64(blockSize) * 1)
 	for num := range req {
 		ddi := ddInfo{}
 		timeA := time.Now()
+		tb.Remove(uint64(blockSize))
 		if n, err = reader.ReadAt(buf, int64(num*blockSize)); err == nil {
 			timeB := time.Now()
 			ddi.RdBytes = int64(n)

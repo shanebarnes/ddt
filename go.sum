@@ -1,2 +1,4 @@
 github.com/dustin/go-humanize v1.0.0 h1:VSnTsYCnlFHaM2/igO1h6X3HA71jcobQuxemgkq4zYo=
 github.com/dustin/go-humanize v1.0.0/go.mod h1:HtrtbFcZ19U5GC7JDqmcUSB87Iq5E25KnS6fMYU6eOk=
+github.com/shanebarnes/goto v0.0.0-20180504021539-49ca1cea1757 h1:3L4tfMnPTOUL7cU53MSaSSzu4ysDvdoHxCjbeKPF6MQ=
+github.com/shanebarnes/goto v0.0.0-20180504021539-49ca1cea1757/go.mod h1:KHhgAmb0ipx1kZmNzzZNvFcO6qg/qTuvAnHAIMGlx/U=
