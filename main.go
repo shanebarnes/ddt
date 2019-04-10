@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/shanebarnes/goto/tokenbucket"
@@ -19,16 +22,101 @@ type ddInfo struct {
 	WrDur   time.Duration
 }
 
+type flagStringSlice []string
+
+// Implement the flag.Value interface: https://golang.org/src/flag/flag.go?s=7450:7510#L281
+func (f *flagStringSlice) String() string {
+	return fmt.Sprintf("%s", *f)
+}
+
+func (f *flagStringSlice) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
+
+type ddReader struct {
+	blocks     [][]byte
+	blockSize  int64
+	file       *os.File
+	fileName   string
+	open       bool
+	patterns   []string
+}
+
+func (ddr *ddReader) Close() error {
+	var err error
+
+	if ddr.open {
+		if ddr.file != nil {
+			err = ddr.file.Close()
+		} else {
+			ddr.blocks = ddr.blocks[:0]
+		}
+
+		ddr.open = false
+	} else {
+		err = syscall.EBADF
+	}
+
+	return err
+}
+
+func (ddr *ddReader) Open() error {
+	var err error
+
+	if len(ddr.patterns) > 0 {
+		for _, pattern := range ddr.patterns {
+			count := ddr.blockSize/int64(len(pattern))+1
+			block := []byte(strings.Repeat(pattern, int(count)))
+			ddr.blocks = append(ddr.blocks, block[0:ddr.blockSize])
+		}
+		ddr.open = true
+	} else if ddr.file, err = os.OpenFile(ddr.fileName, os.O_RDONLY, 0755); err == nil {
+		ddr.open = true
+	}
+
+	return err
+}
+
+func (ddr *ddReader) ReadAt(b []byte, off int64) (int, error) {
+	var err error
+	n := -1
+
+	if ddr.open {
+		if ddr.file != nil {
+			n, err = ddr.file.ReadAt(b, off)
+		} else {
+			blockIndex := (off / ddr.blockSize) % int64(len(ddr.blocks))
+			patternSize := len(ddr.patterns[blockIndex])
+			n = 0
+
+			for n < len(b) {
+				r := len(b)-n
+				if r > patternSize {
+					r = patternSize
+				}
+				copy(b[n:n+r], ddr.blocks[blockIndex][0:r])
+				n = n + r
+			}
+		}
+	}
+
+	return n, err
+}
+
 func main() {
+	var inputPatterns flagStringSlice
+
 	blockSizeStr := flag.String("bs", "4Ki", "Set both input and output block size to n bytes")
 	count := flag.Int64("count", 1, "Copy only n input blocks")
-	fileRd  := flag.String("if", "", "Read input from file instead of the standard input")
+	fileRd := flag.String("if", "", "Read input from file instead of the standard input")
 	fileWr := flag.String("of", "", "Write output to file instead of the standard output")
-	rateBpsStr := flag.String("rate", "0", "Read rate limit in bits per second")
-	threads := flag.Int("threads", runtime.NumCPU(), "")
+	flag.Var(&inputPatterns, "ip", "Create input blocks from input patterns")
+	rateBpsStr := flag.String("rate", "0", "Copy rate limit in bits per second")
+	threads := flag.Int("threads", runtime.NumCPU(), "Number of copy threads")
 
 	flag.Parse()
-	validateFlags(*count, *fileRd, *fileWr, *threads)
+	validateFlags(*count, &inputPatterns, *fileRd, *fileWr, *threads)
 
 	blockSize := int64(0)
 	if f, err := units.ToNumber(*blockSizeStr); err == nil {
@@ -44,9 +132,14 @@ func main() {
 	req := make(chan int64, *threads)
 	res := make(chan *ddInfo, *threads)
 
-	var reader, writer *os.File
+	var writer *os.File
 	var err error
-	if reader, err = os.OpenFile(*fileRd, os.O_RDONLY, 0755); err != nil {
+	reader := &ddReader{
+		blockSize: blockSize,
+		fileName: *fileRd,
+		patterns: inputPatterns,
+	}
+	if err = reader.Open(); err != nil {
 		panic("reader")
 	}
 	defer reader.Close()
@@ -147,12 +240,20 @@ func printStats(it int, sum *ddInfo, blocks int64, duration time.Duration) {
 		units.ToMetricString(float64(rate * 8), 3, "", "bps"))
 }
 
-func validateFlags(count int64, fileRd, fileWr string, threads int) {
+func validateFlags(count int64, patternRd *flagStringSlice, fileRd, fileWr string, threads int) {
 	if count < 1 {
 		panic("count < 1")
 	}
 
-	if len(fileRd) == 0 {
+	if len(*patternRd) > 0 {
+		for i, pattern := range *patternRd {
+			if len(pattern) == 0 {
+				panic("ip[" + strconv.FormatInt(int64(i), 10) + "] == nil")
+			}
+		}
+	}
+
+	if len(*patternRd) == 0 && len(fileRd) == 0 {
 		panic("if == nil")
 	}
 
@@ -165,7 +266,7 @@ func validateFlags(count int64, fileRd, fileWr string, threads int) {
 	}
 }
 
-func worker(id int, reader, writer *os.File, fileRd, fileWr string, blockSize int64, rate uint64, req <-chan int64, res chan<- *ddInfo) {
+func worker(id int, reader *ddReader, writer *os.File, fileRd, fileWr string, blockSize int64, rate uint64, req <-chan int64, res chan<- *ddInfo) {
 	var err error
 
 	buf := make([]byte, blockSize)
