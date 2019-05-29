@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"flag"
 	"fmt"
 	"os"
@@ -104,6 +105,12 @@ func (ddr *ddReader) ReadAt(b []byte, off int64) (int, error) {
 	return n, err
 }
 
+func panicIf(msg string, err error) {
+	if err != nil {
+		panic(msg + ": " + err.Error())
+	}
+}
+
 func main() {
 	var inputPatterns flagStringSlice
 
@@ -139,14 +146,17 @@ func main() {
 		fileName: *fileRd,
 		patterns: inputPatterns,
 	}
-	if err = reader.Open(); err != nil {
-		panic("reader")
-	}
+	err = reader.Open()
+	panicIf("reader", err)
 	defer reader.Close()
 
-	if writer, err = os.OpenFile(*fileWr, os.O_CREATE | os.O_WRONLY, 0755); err != nil {
-		panic("writer")
-	}
+	absPath, err := filepath.Abs(*fileWr)
+	panicIf("", err)
+	err = os.MkdirAll(filepath.Dir(absPath), 0755)
+	panicIf("", err)
+
+	writer, err = os.OpenFile(*fileWr, os.O_CREATE | os.O_WRONLY, 0755)
+	panicIf("writer", err)
 	defer writer.Close()
 	for i := 0; i < *threads; i++ {
 		go worker(i+1, reader, writer, *fileRd, *fileWr, blockSize, rateBps/(8*uint64(*threads)), req, res)
