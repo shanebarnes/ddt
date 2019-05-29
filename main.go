@@ -140,26 +140,31 @@ func main() {
 	res := make(chan *ddInfo, *threads)
 
 	var writer *os.File
+	var fpRd string
 	var err error
+	fpRd, err = filepath.Abs(*fileRd)
+	panicIf("fileRd", err)
+
 	reader := &ddReader{
 		blockSize: blockSize,
-		fileName: *fileRd,
+		fileName: fpRd,
 		patterns: inputPatterns,
 	}
 	err = reader.Open()
 	panicIf("reader", err)
 	defer reader.Close()
 
-	absPath, err := filepath.Abs(*fileWr)
-	panicIf("", err)
-	err = os.MkdirAll(filepath.Dir(absPath), 0755)
+	var fpWr string
+	fpWr, err = filepath.Abs(*fileWr)
+	panicIf("fileWr", err)
+	err = os.MkdirAll(filepath.Dir(fpWr), 0755)
 	panicIf("", err)
 
-	writer, err = os.OpenFile(*fileWr, os.O_CREATE | os.O_WRONLY, 0755)
+	writer, err = os.OpenFile(fpWr, os.O_CREATE | os.O_WRONLY, 0755)
 	panicIf("writer", err)
 	defer writer.Close()
 	for i := 0; i < *threads; i++ {
-		go worker(i+1, reader, writer, *fileRd, *fileWr, blockSize, rateBps/(8*uint64(*threads)), req, res)
+		go worker(i+1, reader, writer, fpRd, fpWr, blockSize, rateBps/(8*uint64(*threads)), req, res)
 	}
 
 	var mutex = &sync.Mutex{}
@@ -184,7 +189,7 @@ func main() {
 			}
 		}
 		close(res)
-		if writer, err := os.OpenFile(*fileWr, os.O_WRONLY|os.O_CREATE, 0755); err == nil {
+		if writer, err := os.OpenFile(fpWr, os.O_WRONLY|os.O_CREATE, 0755); err == nil {
 			defer writer.Close()
 			writer.Truncate(fileSize)
 			//writer.Sync()
