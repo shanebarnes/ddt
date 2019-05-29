@@ -143,6 +143,7 @@ func main() {
 	var fpRd string
 	var err error
 	fpRd, err = filepath.Abs(*fileRd)
+	fpRd = FixLongUncPath(fpRd)
 	panicIf("fileRd", err)
 
 	reader := &ddReader{
@@ -156,6 +157,7 @@ func main() {
 
 	var fpWr string
 	fpWr, err = filepath.Abs(*fileWr)
+	fpWr = FixLongUncPath(fpWr)
 	panicIf("fileWr", err)
 	err = os.MkdirAll(filepath.Dir(fpWr), 0755)
 	panicIf("", err)
