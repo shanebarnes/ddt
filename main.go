@@ -192,13 +192,8 @@ func main() {
 		}
 		close(res)
 
-		if fpWr != os.DevNull {
-			if writer, err := OpenFileWr(fpWr, 0755); err == nil {
-				defer writer.Close()
-				writer.Truncate(fileSize)
-				//writer.Sync()
-			}
-		}
+		writer.Truncate(fileSize)
+		//writer.Sync()
 	} ()
 
 	start := time.Now()
