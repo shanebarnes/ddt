@@ -236,7 +236,7 @@ func printStats(it int, sum *ddInfo, blocks int64, duration time.Duration) {
 
 	if it % 10 == 0 {
 		fmt.Fprintf(os.Stdout,
-			"%17s %7s %9s %9s %9s %12s\n",
+			"%17s %9s %9s %9s %9s %12s\n",
 			"ELAPSED TIME",
 			"BLOCKS",
 			"AVG READ",
@@ -246,7 +246,7 @@ func printStats(it int, sum *ddInfo, blocks int64, duration time.Duration) {
 	}
 
 	fmt.Fprintf(os.Stdout,
-		"%17s %7s %9s %9s %9s %12s\n",
+		"%17s %9s %9s %9s %9s %12s\n",
 		units.ToTimeString(float64(duration)/float64(time.Second)),
 		units.ToMetricString(float64(blocks), 3, "", ""),
 		units.ToMetricString(avgRdTime.Seconds(), 3, "", "s"),
@@ -296,14 +296,17 @@ func worker(id int, reader *ddReader, writer *os.File, fileRd, fileWr string, bl
 		ddi := ddInfo{}
 		timeA := time.Now()
 		tb.Remove(uint64(blockSize))
-		if n, err = reader.ReadAt(buf, int64(num*blockSize)); err == nil {
-			timeB := time.Now()
-			ddi.RdBytes = int64(n)
-			n, err = writer.WriteAt(buf, int64(num*blockSize))
-			ddi.WrDur = time.Since(timeB)
-			ddi.WrBytes = int64(n)
-			ddi.RdDur = timeB.Sub(timeA)
-		}
+		n, err = reader.ReadAt(buf, int64(num*blockSize))
+		panicIf("Read failed", err)
+
+		timeB := time.Now()
+		ddi.RdBytes = int64(n)
+		n, err = writer.WriteAt(buf, int64(num*blockSize))
+		panicIf("Write failed", err)
+
+		ddi.WrDur = time.Since(timeB)
+		ddi.WrBytes = int64(n)
+		ddi.RdDur = timeB.Sub(timeA)
 		res <- &ddi
 	}
 }
