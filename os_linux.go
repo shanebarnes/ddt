@@ -9,24 +9,14 @@ import (
 )
 
 func OpenFileRd(name string, perm os.FileMode) (*os.File, error) {
-	flag := os.O_RDONLY | os.O_SYNC
-
-	// O_DIRECT may fail on some kernels and filesystems
-	f, err := os.OpenFile(name, flag | syscall.O_DIRECT, perm)
-	if err == syscall.EINVAL {
-		f, err = os.OpenFile(name, flag, perm)
-	}
-	return f, err
+	// Notes:
+	//   Ignore O_DIRECT as it may fail on some kernels and filesystems
+	return os.OpenFile(name, os.O_RDONLY | os.O_SYNC, perm)
 }
 
 func OpenFileWr(name string, perm os.FileMode) (*os.File, error) {
-	// syscall.O_SYNC - wait for file data and meta data to be written to disk
-	flag := os.O_WRONLY | os.O_CREATE | os.O_TRUNC | syscall.O_DSYNC
-
-	// O_DIRECT may fail on some kernels and filesystems
-	f, err := os.OpenFile(name,  flag | syscall.O_DIRECT, perm)
-	if err == syscall.EINVAL {
-		f, err = os.OpenFile(name, flag, perm)
-	}
-	return f, err
+	// Notes:
+	//   Ignore O_DIRECT as it may fail on some kernels and filesystems
+	//   Use syscall.O_DSYNC instead of syscall.O_SYNC for more optimistic results
+	return os.OpenFile(name,  os.O_WRONLY | os.O_CREATE | os.O_TRUNC | syscall.O_DSYNC, perm)
 }
