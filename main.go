@@ -222,9 +222,9 @@ func main() {
 
 func printStats(it int, sum *ddInfo, blocks int64, duration time.Duration) {
 	rate := int64(0)
-	sec := int64(duration / time.Second)
-	if sec > 0 {
-		rate = sum.WrBytes / sec
+	usec := int64(duration / time.Microsecond)
+	if usec > 0 {
+		rate = sum.WrBytes * int64(time.Second / time.Microsecond) / usec
 	}
 
 	avgRdTime := time.Duration(0)
