@@ -1,3 +1,5 @@
 module github.com/shanebarnes/ddt
 
-require github.com/shanebarnes/goto v0.0.0-20180504021539-49ca1cea1757
+go 1.15
+
+require github.com/shanebarnes/goto v0.0.0-20201213200641-24b3f3b042a9

@@ -72,7 +72,7 @@ func (ddr *ddReader) Open() error {
 			ddr.blocks = append(ddr.blocks, block[0:ddr.blockSize])
 		}
 		ddr.open = true
-	} else if ddr.file, err = os.OpenFile(ddr.fileName, os.O_RDONLY, 0755); err == nil {
+	} else if ddr.file, err = OpenFileRd(ddr.fileName, 0755); err == nil {
 		ddr.open = true
 	}
 
@@ -162,7 +162,7 @@ func main() {
 	err = os.MkdirAll(filepath.Dir(fpWr), 0755)
 	panicIf("", err)
 
-	writer, err = os.OpenFile(fpWr, os.O_CREATE | os.O_WRONLY, 0755)
+	writer, err = OpenFileWr(fpWr, 0755)
 	panicIf("writer", err)
 	defer writer.Close()
 	for i := 0; i < *threads; i++ {
@@ -191,10 +191,13 @@ func main() {
 			}
 		}
 		close(res)
-		if writer, err := os.OpenFile(fpWr, os.O_WRONLY|os.O_CREATE, 0755); err == nil {
-			defer writer.Close()
-			writer.Truncate(fileSize)
-			//writer.Sync()
+
+		if fpWr != os.DevNull {
+			if writer, err := OpenFileWr(fpWr, 0755); err == nil {
+				defer writer.Close()
+				writer.Truncate(fileSize)
+				//writer.Sync()
+			}
 		}
 	} ()
 
@@ -258,6 +261,11 @@ func printStats(it int, sum *ddInfo, blocks int64, duration time.Duration) {
 }
 
 func validateFlags(count int64, patternRd *flagStringSlice, fileRd, fileWr string, threads int) {
+	if len(os.Args) < 2 {
+		flag.PrintDefaults()
+		os.Exit(1)
+	}
+
 	if count < 1 {
 		panic("count < 1")
 	}
