@@ -13,6 +13,9 @@ $ go build -v
 ## Examples
 
 ``` shell
+$ # diskless read/write
+$ ./ddt -if=/dev/zero -of=/dev/null -bs=1M -count=1000 -threads=4
+$
 $ # create a random 10MiB file
 $ ./ddt -if=/dev/urandom -of=10M.bin -bs=1M -count=10 -threads=4
 $

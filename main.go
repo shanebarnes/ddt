@@ -222,9 +222,9 @@ func main() {
 
 func printStats(it int, sum *ddInfo, blocks int64, duration time.Duration) {
 	rate := int64(0)
-	sec := int64(time.Duration(duration) / time.Second)
-	if sec > 0 {
-		rate = sum.WrBytes / sec
+	nsec := int64(time.Duration(duration) / time.Nanosecond)
+	if nsec > 0 {
+		rate = sum.WrBytes * int64(time.Second) / nsec
 	}
 
 	avgRdTime := time.Duration(0)
@@ -236,7 +236,7 @@ func printStats(it int, sum *ddInfo, blocks int64, duration time.Duration) {
 
 	if it % 10 == 0 {
 		fmt.Fprintf(os.Stdout,
-			"%17s %7s %9s %9s %9s %9s\n",
+			"%17s %7s %9s %9s %9s %12s\n",
 			"ELAPSED TIME",
 			"BLOCKS",
 			"AVG READ",
@@ -246,7 +246,7 @@ func printStats(it int, sum *ddInfo, blocks int64, duration time.Duration) {
 	}
 
 	fmt.Fprintf(os.Stdout,
-		"%17s %7s %9s %9s %9s %9s\n",
+		"%17s %7s %9s %9s %9s %12s\n",
 		units.ToTimeString(float64(duration)/float64(time.Second)),
 		units.ToMetricString(float64(blocks), 3, "", ""),
 		units.ToMetricString(avgRdTime.Seconds(), 3, "", "s"),
