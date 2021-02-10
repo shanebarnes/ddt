@@ -135,7 +135,6 @@ func main() {
 		rateBps = uint64(f)
 	}
 
-	fileSize := int64((*count) * (blockSize))
 	req := make(chan int64, *threads)
 	res := make(chan *ddInfo, *threads)
 
@@ -192,7 +191,6 @@ func main() {
 		}
 		close(res)
 
-		writer.Truncate(fileSize)
 		//writer.Sync()
 	} ()
 
