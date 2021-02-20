@@ -79,6 +79,10 @@ func (ddr *ddReader) Open() error {
 	return err
 }
 
+func (ddr *ddReader) Read(b []byte) (int, error) {
+	return ddr.file.Read(b)
+}
+
 func (ddr *ddReader) ReadAt(b []byte, off int64) (int, error) {
 	var err error
 	n := -1
@@ -164,6 +168,7 @@ func main() {
 	writer, err = OpenFileWr(fpWr, 0755)
 	panicIf("writer", err)
 	defer writer.Close()
+
 	for i := 0; i < *threads; i++ {
 		go worker(i+1, reader, writer, fpRd, fpWr, blockSize, rateBps/(8*uint64(*threads)), req, res)
 	}
@@ -282,6 +287,22 @@ func validateFlags(count int64, patternRd *flagStringSlice, fileRd, fileWr strin
 	if threads < 1 {
 		panic("threads < 1")
 	}
+}
+
+func worker2(reader *ddReader, writer *os.File, fileRd, fileWr string, blockSize, count int64) {
+	var err error
+	buf := make([]byte, blockSize)
+
+	t0 := time.Now()
+	for i := int64(0); i < count; i++ {
+		_, err = reader.ReadAt(buf, int64(i*blockSize))
+		//_, err = reader.Read(buf)
+		panicIf("Read failed", err)
+		_, err = writer.WriteAt(buf, int64(i*blockSize))
+		//_, err = writer.Write(buf)
+		panicIf("Write failed", err)
+	}
+	printStats(0, &ddInfo{RdBytes: blockSize * count, WrBytes: blockSize * count}, count, time.Since(t0))
 }
 
 func worker(id int, reader *ddReader, writer *os.File, fileRd, fileWr string, blockSize int64, rate uint64, req <-chan int64, res chan<- *ddInfo) {
