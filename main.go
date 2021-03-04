@@ -1,10 +1,10 @@
 package main
 
 import (
-	"path/filepath"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -14,6 +14,10 @@ import (
 
 	"github.com/shanebarnes/goto/tokenbucket"
 	"github.com/shanebarnes/goto/units"
+)
+
+const (
+	filePerm = 0755
 )
 
 type ddInfo struct {
@@ -35,78 +39,134 @@ func (f *flagStringSlice) Set(value string) error {
 	return nil
 }
 
-type ddReader struct {
-	blocks     [][]byte
-	blockSize  int64
-	file       *os.File
-	fileName   string
-	open       bool
-	patterns   []string
+type ddCopier struct {
+	blocks    [][]byte
+	blockSize int64
+	fileRd    []*os.File
+	fileWr    []*os.File
+	muRd      sync.Mutex
+	muWr      sync.Mutex
+	nameRd    string
+	nameWr    string
+	open      bool
+	patterns  []string
+	refRd     int
+	refWr     int
 }
 
-func (ddr *ddReader) Close() error {
+func (ddc *ddCopier) Open(idx int, share bool) error {
 	var err error
+	var fileRd, fileWr *os.File
 
-	if ddr.open {
-		if ddr.file != nil {
-			err = ddr.file.Close()
-		} else {
-			ddr.blocks = ddr.blocks[:0]
-		}
-
-		ddr.open = false
-	} else {
-		err = syscall.EBADF
-	}
-
-	return err
-}
-
-func (ddr *ddReader) Open() error {
-	var err error
-
-	if len(ddr.patterns) > 0 {
-		for _, pattern := range ddr.patterns {
-			count := ddr.blockSize/int64(len(pattern))+1
-			block := []byte(strings.Repeat(pattern, int(count)))
-			ddr.blocks = append(ddr.blocks, block[0:ddr.blockSize])
-		}
-		ddr.open = true
-	} else if ddr.file, err = OpenFileRd(ddr.fileName, 0755); err == nil {
-		ddr.open = true
-	}
-
-	return err
-}
-
-func (ddr *ddReader) Read(b []byte) (int, error) {
-	return ddr.file.Read(b)
-}
-
-func (ddr *ddReader) ReadAt(b []byte, off int64) (int, error) {
-	var err error
-	n := -1
-
-	if ddr.open {
-		if ddr.file != nil {
-			n, err = ddr.file.ReadAt(b, off)
-		} else {
-			blockIndex := (off / ddr.blockSize) % int64(len(ddr.blocks))
-			patternSize := len(ddr.patterns[blockIndex])
-			n = 0
-
-			for n < len(b) {
-				r := len(b)-n
-				if r > patternSize {
-					r = patternSize
-				}
-				copy(b[n:n+r], ddr.blocks[blockIndex][0:r])
-				n = n + r
+	if share && len(ddc.fileRd) == 1 && len(ddc.fileWr) == 1 {
+		ddc.muRd.Lock()
+		ddc.refRd++
+		ddc.muRd.Unlock()
+		ddc.muWr.Lock()
+		ddc.refWr++
+		ddc.muWr.Unlock()
+	} else if idx == len(ddc.fileRd) && idx == len(ddc.fileWr) {
+		if len(ddc.patterns) > 0 {
+			for _, pattern := range ddc.patterns {
+				count := ddc.blockSize/int64(len(pattern)) + 1
+				block := []byte(strings.Repeat(pattern, int(count)))
+				ddc.blocks = append(ddc.blocks, block[0:ddc.blockSize])
 			}
+		} else {
+			fileRd, err = OpenFileRd(ddc.nameRd, filePerm)
 		}
+
+		if err != nil {
+			// Do nothing
+		} else if fileWr, err = OpenFileWr(ddc.nameWr, filePerm); err != nil {
+			fileRd.Close()
+		} else {
+			ddc.muRd.Lock()
+			ddc.refRd++
+			ddc.muRd.Unlock()
+			ddc.muWr.Lock()
+			ddc.refWr++
+			ddc.muWr.Unlock()
+			ddc.fileRd = append(ddc.fileRd, fileRd)
+			ddc.fileWr = append(ddc.fileWr, fileWr)
+		}
+	} else {
+		err = syscall.EINVAL
 	}
 
-	return n, err
+	return err
+}
+
+func (ddc *ddCopier) ReadAt(idx int, buf []byte, off int64) (int, error) {
+	if len(ddc.patterns) > 0 {
+		blockIndex := (off / ddc.blockSize) % int64(len(ddc.blocks))
+		patternSize := len(ddc.patterns[blockIndex])
+		n := 0
+
+		for n < len(buf) {
+			r := len(buf) - n
+			if r > patternSize {
+				r = patternSize
+			}
+			copy(buf[n:n+r], ddc.blocks[blockIndex][0:r])
+			n = n + r
+		}
+		return n, nil
+	} else if len(ddc.fileRd) == 0 {
+		return -1, syscall.EBADF
+	} else if idx < len(ddc.fileRd) {
+		ddc.fileRd[idx].ReadAt(buf, off)
+	}
+	return ddc.fileRd[0].ReadAt(buf, off) // share
+}
+
+func (ddc *ddCopier) ReadClose(idx int) error {
+	var err error
+	if len(ddc.fileRd) == 0 && len(ddc.patterns) == 0 {
+		err = syscall.EBADF
+	} else if len(ddc.fileRd) == 1 { // share
+		ddc.muRd.Lock()
+		if ddc.refRd > 0 {
+			ddc.refRd--
+		}
+		ref := ddc.refRd
+		ddc.muRd.Unlock()
+		if ref == 0 {
+			err = ddc.fileRd[0].Close()
+		}
+	} else if idx < len(ddc.fileRd) {
+		err = ddc.fileRd[idx].Close()
+	}
+	return err
+}
+
+func (ddc *ddCopier) WriteAt(idx int, buf []byte, off int64) (int, error) {
+	if len(ddc.fileWr) == 0 {
+		return -1, syscall.EBADF
+	} else if idx < len(ddc.fileWr) {
+		return ddc.fileWr[idx].WriteAt(buf, off)
+	}
+	return ddc.fileWr[0].WriteAt(buf, off) // share
+}
+
+func (ddc *ddCopier) WriteClose(idx int) error {
+	var err error
+	if len(ddc.fileWr) == 0 {
+		err = syscall.EBADF
+	} else if len(ddc.fileWr) == 1 { // share
+		ddc.muWr.Lock()
+		if ddc.refWr > 0 {
+			ddc.refWr--
+		}
+		ref := ddc.refWr
+		ddc.muWr.Unlock()
+		if ref == 0 {
+			err = ddc.fileWr[0].Close()
+		}
+	} else if idx < len(ddc.fileWr) {
+		err = ddc.fileWr[idx].Close()
+	}
+	return err
 }
 
 func panicIf(msg string, err error) {
@@ -124,6 +184,7 @@ func main() {
 	fileWr := flag.String("of", "", "Write output to file instead of the standard output")
 	flag.Var(&inputPatterns, "ip", "Create input blocks from input patterns")
 	rateBpsStr := flag.String("rate", "0", "Copy rate limit in bits per second")
+	share := flag.Bool("share", true, "Share a single read and write file descriptor between threads")
 	threads := flag.Int("threads", runtime.NumCPU(), "Number of copy threads")
 
 	flag.Parse()
@@ -142,43 +203,39 @@ func main() {
 	req := make(chan int64, *threads)
 	res := make(chan *ddInfo, *threads)
 
-	var writer *os.File
 	var fpRd string
 	var err error
 	fpRd, err = filepath.Abs(*fileRd)
 	fpRd = FixLongUncPath(fpRd)
 	panicIf("fileRd", err)
 
-	reader := &ddReader{
-		blockSize: blockSize,
-		fileName: fpRd,
-		patterns: inputPatterns,
-	}
-	err = reader.Open()
-	panicIf("reader", err)
-	defer reader.Close()
-
 	var fpWr string
 	fpWr, err = filepath.Abs(*fileWr)
 	fpWr = FixLongUncPath(fpWr)
 	panicIf("fileWr", err)
-	err = os.MkdirAll(filepath.Dir(fpWr), 0755)
+	err = os.MkdirAll(filepath.Dir(fpWr), filePerm)
 	panicIf("", err)
 
-	writer, err = OpenFileWr(fpWr, 0755)
-	panicIf("writer", err)
-	defer writer.Close()
+	copier := &ddCopier{
+		blockSize: blockSize,
+		nameRd: fpRd,
+		nameWr: fpWr,
+		patterns: inputPatterns,
+	}
 
+	var wg sync.WaitGroup
 	for i := 0; i < *threads; i++ {
-		go worker(i+1, reader, writer, fpRd, fpWr, blockSize, rateBps/(8*uint64(*threads)), req, res)
+		err = copier.Open(i, *share)
+		panicIf("copier " + strconv.Itoa(i), err)
+		wg.Add(1)
+		go copyWorker(i, copier, rateBps/(8*uint64(*threads)), &wg, req, res)
 	}
 
 	var mutex = &sync.Mutex{}
-	var wg sync.WaitGroup
-	wg.Add(1)
 	blocks := int64(0)
 	sum := ddInfo{}
 
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for i := int64(0); i < *count; i++ {
@@ -195,7 +252,6 @@ func main() {
 			}
 		}
 		close(res)
-
 		//writer.Sync()
 	} ()
 
@@ -289,39 +345,27 @@ func validateFlags(count int64, patternRd *flagStringSlice, fileRd, fileWr strin
 	}
 }
 
-func worker2(reader *ddReader, writer *os.File, fileRd, fileWr string, blockSize, count int64) {
+func copyWorker(id int, copier *ddCopier, rate uint64, wg *sync.WaitGroup, req <-chan int64, res chan<- *ddInfo) {
+	defer wg.Done()
+	defer copier.ReadClose(id)
+	defer copier.WriteClose(id)
+
 	var err error
-	buf := make([]byte, blockSize)
-
-	t0 := time.Now()
-	for i := int64(0); i < count; i++ {
-		_, err = reader.ReadAt(buf, int64(i*blockSize))
-		//_, err = reader.Read(buf)
-		panicIf("Read failed", err)
-		_, err = writer.WriteAt(buf, int64(i*blockSize))
-		//_, err = writer.Write(buf)
-		panicIf("Write failed", err)
-	}
-	printStats(0, &ddInfo{RdBytes: blockSize * count, WrBytes: blockSize * count}, count, time.Since(t0))
-}
-
-func worker(id int, reader *ddReader, writer *os.File, fileRd, fileWr string, blockSize int64, rate uint64, req <-chan int64, res chan<- *ddInfo) {
-	var err error
-
-	buf := make([]byte, blockSize)
+	buf := make([]byte, copier.blockSize)
 	n := 0
-	tb := tokenbucket.New(rate, uint64(blockSize) * 1)
+	tb := tokenbucket.New(rate, uint64(copier.blockSize) * 1)
+
 	for num := range req {
 		ddi := ddInfo{}
 		timeA := time.Now()
-		tb.Remove(uint64(blockSize))
-		n, err = reader.ReadAt(buf, int64(num*blockSize))
-		panicIf("Read failed", err)
+		tb.Remove(uint64(copier.blockSize))
+		n, err = copier.ReadAt(id, buf, num*copier.blockSize)
+		panicIf(fmt.Sprintf("Reader %d failed", id), err)
 
 		timeB := time.Now()
 		ddi.RdBytes = int64(n)
-		n, err = writer.WriteAt(buf, int64(num*blockSize))
-		panicIf("Write failed", err)
+		n, err = copier.WriteAt(id, buf, num*copier.blockSize)
+		panicIf(fmt.Sprintf("Writer %d failed", id), err)
 
 		ddi.WrDur = time.Since(timeB)
 		ddi.WrBytes = int64(n)
