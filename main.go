@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -169,8 +170,13 @@ func (ddc *ddCopier) WriteClose(idx int) error {
 	return err
 }
 
-func panicIf(msg string, err error) {
+func panicIf(msg string, err error, ignore ...error) {
 	if err != nil {
+		for _, e := range ignore {
+			if err == e {
+				return
+			}
+		}
 		panic(msg + ": " + err.Error())
 	}
 }
@@ -178,8 +184,8 @@ func panicIf(msg string, err error) {
 func main() {
 	var inputPatterns flagStringSlice
 
-	blockSizeStr := flag.String("bs", "4Ki", "Set both input and output block size to n bytes")
-	count := flag.Int64("count", 1, "Copy only n input blocks")
+	blockSizeStr := flag.String("bs", "1Mi", "Set both input and output block size to n bytes")
+	count := flag.Int64("count", -1, "Copy only n input blocks")
 	fileRd := flag.String("if", "", "Read input from file instead of the standard input")
 	fileWr := flag.String("of", "", "Write output to file instead of the standard output")
 	flag.Var(&inputPatterns, "ip", "Create input blocks from input patterns")
@@ -188,7 +194,6 @@ func main() {
 	threads := flag.Int("threads", runtime.NumCPU(), "Number of copy threads")
 
 	flag.Parse()
-	validateFlags(*count, &inputPatterns, *fileRd, *fileWr, *threads)
 
 	blockSize := int64(0)
 	if f, err := units.ToNumber(*blockSizeStr); err == nil {
@@ -199,6 +204,8 @@ func main() {
 	if f, err := units.ToNumber(*rateBpsStr); err == nil {
 		rateBps = uint64(f)
 	}
+
+	validateFlags(blockSize, count, &inputPatterns, *fileRd, *fileWr, *threads)
 
 	req := make(chan int64, *threads)
 	res := make(chan *ddInfo, *threads)
@@ -241,7 +248,7 @@ func main() {
 		for i := int64(0); i < *count; i++ {
 			ddi := <-res
 
-			if ddi.WrBytes >= 0 {
+			if ddi.WrBytes > 0 {
 				mutex.Lock()
 				blocks = blocks + 1
 				sum.RdBytes = sum.RdBytes + ddi.RdBytes
@@ -314,14 +321,24 @@ func printStats(it int, sum *ddInfo, blocks int64, duration time.Duration) {
 		units.ToMetricString(float64(rate * 8), 3, "", "bps"))
 }
 
-func validateFlags(count int64, patternRd *flagStringSlice, fileRd, fileWr string, threads int) {
+func validateFlags(blockSize int64, count *int64, patternRd *flagStringSlice, fileRd, fileWr string, threads int) {
 	if len(os.Args) < 2 {
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
 
-	if count < 1 {
-		panic("count < 1")
+	if blockSize <= 0 {
+		panic("bs <= 0")
+	}
+
+	if *count < 0 {
+		if len(*patternRd) == 0 {
+			fi, err := os.Stat(fileRd)
+			panicIf("if file failure", err)
+			*count = fi.Size() / blockSize
+		} else {
+			*count = 1
+		}
 	}
 
 	if len(*patternRd) > 0 {
@@ -354,22 +371,26 @@ func copyWorker(id int, copier *ddCopier, rate uint64, wg *sync.WaitGroup, req <
 	buf := make([]byte, copier.blockSize)
 	n := 0
 	tb := tokenbucket.New(rate, uint64(copier.blockSize) * 1)
+	eof := false
 
 	for num := range req {
 		ddi := ddInfo{}
-		timeA := time.Now()
-		tb.Remove(uint64(copier.blockSize))
-		n, err = copier.ReadAt(id, buf, num*copier.blockSize)
-		panicIf(fmt.Sprintf("Reader %d failed", id), err)
+		if !eof {
+			timeA := time.Now()
+			tb.Remove(uint64(copier.blockSize))
+			n, err = copier.ReadAt(id, buf, num*copier.blockSize)
+			eof = (err == io.EOF)
+			panicIf(fmt.Sprintf("Reader %d failed", id), err, io.EOF)
 
-		timeB := time.Now()
-		ddi.RdBytes = int64(n)
-		n, err = copier.WriteAt(id, buf, num*copier.blockSize)
-		panicIf(fmt.Sprintf("Writer %d failed", id), err)
+			timeB := time.Now()
+			ddi.RdBytes = int64(n)
+			n, err = copier.WriteAt(id, buf[:n], num*copier.blockSize)
+			panicIf(fmt.Sprintf("Writer %d failed", id), err)
 
-		ddi.WrDur = time.Since(timeB)
-		ddi.WrBytes = int64(n)
-		ddi.RdDur = timeB.Sub(timeA)
+			ddi.WrDur = time.Since(timeB)
+			ddi.WrBytes = int64(n)
+			ddi.RdDur = timeB.Sub(timeA)
+		}
 		res <- &ddi
 	}
 }
