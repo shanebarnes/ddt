@@ -243,16 +243,16 @@ func copyWorker(id int, copier *ddt.Copier, skip int64, rate uint64, wg *sync.Wa
 
 	for num := range req {
 		ddi := ddInfo{}
-		if num >= skip && !eof {
+		if !eof {
 			timeA := time.Now()
 			tb.Remove(uint64(copier.BlockSize()))
-			n, err = copier.ReadAt(id, buf, num*copier.BlockSize())
+			n, err = copier.ReadAt(id, buf, (num+skip)*copier.BlockSize())
 			eof = (err == io.EOF)
 			panicIf(fmt.Sprintf("Reader %d failed", id), err, io.EOF)
 
 			timeB := time.Now()
 			ddi.RdBytes = int64(n)
-			n, err = copier.WriteAt(id, buf[:n], (num-skip)*copier.BlockSize())
+			n, err = copier.WriteAt(id, buf[:n], num*copier.BlockSize())
 			panicIf(fmt.Sprintf("Writer %d failed", id), err)
 
 			ddi.WrDur = time.Since(timeB)
