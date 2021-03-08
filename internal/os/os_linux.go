@@ -1,4 +1,4 @@
-package main
+package os
 
 // References:
 //  https://yarchive.net/comp/linux/o_direct.html

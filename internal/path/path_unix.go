@@ -1,6 +1,6 @@
 // +build darwin linux
 
-package main
+package path
 
 func FixLongUncPath (path string) string {
 	return path
