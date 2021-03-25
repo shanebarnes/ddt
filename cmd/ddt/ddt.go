@@ -89,12 +89,12 @@ func main() {
 	err = os.MkdirAll(filepath.Dir(fpWr), ddt.FilePerm)
 	panicIf("", err)
 
-	copier := ddt.Create(blockSize, fpRd, fpWr,inputPatterns)
+	copier := ddt.Create(blockSize, fpRd, fpWr, inputPatterns)
 
 	var wg sync.WaitGroup
 	for i := 0; i < *threads; i++ {
 		err = copier.Open(i, *share)
-		panicIf("copier " + strconv.Itoa(i), err)
+		panicIf("copier "+strconv.Itoa(i), err)
 		wg.Add(1)
 		go copyWorker(i, copier, *skip, rateBps/(8*uint64(*threads)), &wg, req, res)
 	}
@@ -111,7 +111,7 @@ func main() {
 
 			if ddi.WrBytes > 0 {
 				mutex.Lock()
-				blocks = blocks + 1
+				blocks++
 				sum.RdBytes = sum.RdBytes + ddi.RdBytes
 				sum.RdDur = sum.RdDur + ddi.RdDur
 				sum.WrBytes = sum.WrBytes + ddi.WrBytes
@@ -121,7 +121,7 @@ func main() {
 		}
 		close(res)
 		//writer.Sync()
-	} ()
+	}()
 
 	start := time.Now()
 	ticker := time.NewTicker(time.Millisecond * 1000)
@@ -133,10 +133,10 @@ func main() {
 			tmpSum := sum
 			mutex.Unlock()
 
-			printStats(it, &tmpSum, tmpBlocks, time.Since(start))
+			printStats(it, &tmpSum, tmpBlocks, *count, time.Since(start))
 			it = it + 1
 		}
-	} ()
+	}()
 
 	for i := int64(0); i < *count; i++ {
 		req <- i
@@ -144,28 +144,34 @@ func main() {
 	close(req)
 	wg.Wait()
 	stop := time.Now()
-	printStats(it, &sum, blocks, stop.Sub(start))
+	printStats(it, &sum, blocks, blocks, stop.Sub(start))
 }
 
-func printStats(it int, sum *ddInfo, blocks int64, duration time.Duration) {
+func printStats(it int, sum *ddInfo, blocksComplete, blocksTotal int64, duration time.Duration) {
 	rate := int64(0)
 	usec := int64(duration / time.Microsecond)
 	if usec > 0 {
-		rate = sum.WrBytes * int64(time.Second / time.Microsecond) / usec
+		rate = sum.WrBytes * int64(time.Second/time.Microsecond) / usec
 	}
 
 	avgRdTime := time.Duration(0)
 	avgWrTime := time.Duration(0)
-	if blocks > 0 {
-		avgRdTime = sum.RdDur / time.Duration(blocks)
-		avgWrTime = sum.WrDur / time.Duration(blocks)
+	progress := float64(0)
+	if blocksTotal > 0 {
+		progress = float64(blocksComplete) / float64(blocksTotal) * 100
 	}
 
-	if it % 10 == 0 {
+	if blocksComplete > 0 {
+		avgRdTime = sum.RdDur / time.Duration(blocksComplete)
+		avgWrTime = sum.WrDur / time.Duration(blocksComplete)
+	}
+
+	if it%10 == 0 {
 		fmt.Fprintf(os.Stdout,
-			"%17s %9s %9s %9s %9s %12s\n",
+			"%17s %9s %9s %9s %9s %9s %12s\n",
 			"ELAPSED TIME",
 			"BLOCKS",
+			"PROGRESS",
 			"AVG READ",
 			"AVG WRITE",
 			"SIZE",
@@ -173,13 +179,14 @@ func printStats(it int, sum *ddInfo, blocks int64, duration time.Duration) {
 	}
 
 	fmt.Fprintf(os.Stdout,
-		"%17s %9s %9s %9s %9s %12s\n",
+		"%17s %9s %9s %9s %9s %9s %12s\n",
 		units.ToTimeString(float64(duration)/float64(time.Second)),
-		units.ToMetricString(float64(blocks), 3, "", ""),
+		units.ToMetricString(float64(blocksComplete), 3, "", ""),
+		units.ToMetricString(progress, 3, "", "%"),
 		units.ToMetricString(avgRdTime.Seconds(), 3, "", "s"),
 		units.ToMetricString(avgWrTime.Seconds(), 3, "", "s"),
 		units.ToMetricString(float64(sum.WrBytes), 3, "", "B"),
-		units.ToMetricString(float64(rate * 8), 3, "", "bps"))
+		units.ToMetricString(float64(rate*8), 3, "", "bps"))
 }
 
 func validateFlags(blockSize int64, skip, count *int64, patternRd *flagStringSlice, fileRd, fileWr string, threads int) {
@@ -201,7 +208,7 @@ func validateFlags(blockSize int64, skip, count *int64, patternRd *flagStringSli
 			fi, err := os.Stat(fileRd)
 			panicIf("if file failure", err)
 			*count = fi.Size() / blockSize
-			if fi.Size() % blockSize != 0 {
+			if fi.Size()%blockSize != 0 {
 				*count++
 			}
 		} else {
@@ -238,7 +245,7 @@ func copyWorker(id int, copier *ddt.Copier, skip int64, rate uint64, wg *sync.Wa
 	var err error
 	buf := make([]byte, copier.BlockSize())
 	n := 0
-	tb := tokenbucket.New(rate, uint64(copier.BlockSize()) * 1)
+	tb := tokenbucket.New(rate, uint64(copier.BlockSize())*1)
 	eof := false
 
 	for num := range req {
