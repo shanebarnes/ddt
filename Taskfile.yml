@@ -1,0 +1,26 @@
+version: '3'
+
+tasks:
+  default:
+    cmds:
+      - task: build
+      - task: fmt
+      - task: test
+      - task: vet
+
+  build:
+    cmds:
+      - export GOOS=$(go env GOOS)
+      - go build -v -o "bin/ddt" cmd/ddt/*.go
+
+  fmt:
+    cmds:
+      - gofmt -d .
+
+  test:
+    cmds:
+      - go test -p 1 -v ./... -cover
+
+  vet:
+    cmds:
+      - go vet -v ./...
