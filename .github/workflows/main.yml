@@ -13,6 +13,7 @@ jobs:
           - os_version: ubuntu-latest
           - os_version: windows-latest
     runs-on: ${{ matrix.os_version }}
+    timeout-minutes: 5
     steps:
       - name: Install Go
         uses: actions/setup-go@v5
