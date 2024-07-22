@@ -15,7 +15,7 @@ tasks:
 
   build:
     cmds:
-      - go build -v -o "bin/ddt" cmd/ddt/*.go
+      - go build -v -ldflags "-s -w" -o "bin/ddt" cmd/ddt/*.go
 
   fmt:
     cmds:

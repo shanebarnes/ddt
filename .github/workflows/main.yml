@@ -6,12 +6,18 @@ jobs:
   build:
     strategy:
       matrix:
-        go_version: [1.21.x, 1.22.x]
+        go_version: [1.22.x]
         os_version: [macos-latest, ubuntu-latest, windows-latest]
         include:
           - os_version: macos-latest
+            os_arch: "arm64"
+            os_name: "darwin"
           - os_version: ubuntu-latest
+            os_name: "linux"
+            os_arch: "amd64"
           - os_version: windows-latest
+            os_name: "windows"
+            os_arch: "amd64"
     runs-on: ${{ matrix.os_version }}
     timeout-minutes: 5
     steps:
@@ -19,16 +25,14 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go_version }}
-      - name: Setup go-task
-        uses: pnorton5432/setup-task@v1
-        with:
-          task-version: 3.38.0
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Build Artifacts
-        run: task build
+        run: >
+          go build -v -ldflags "-s -w" -o "bin/ddt-${{ matrix.os_name }}-${{ matrix.os_arch }}" cmd/ddt/*.go
+        shell: bash
       - name: Upload Artifacts
         uses: actions/upload-artifact@master
         with:
-          name: ddt
+          name: "ddt-${{ matrix.os_name }}-${{ matrix.os_arch }}"
           path: bin
