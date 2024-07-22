@@ -1,0 +1,29 @@
+name: ddt
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        go_version: [1.21.x, 1.22.x]
+        os_version: [macos-latest, ubuntu-latest, windows-latest]
+        include:
+          - os_version: macos-latest
+          - os_version: ubuntu-latest
+          - os_version: windows-latest
+    runs-on: ${{ matrix.os_version }}
+    steps:
+      - name: Install Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: ${{ matrix.go_version }}
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Build Artifacts
+        run: task build
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@master
+        with:
+          name: ddt
+          path: bin
