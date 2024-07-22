@@ -22,7 +22,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Build Artifacts
-        run: go build -v -ldflags "-s -w" -o "bin/ddt" cmd/ddt/*.go
+        run: >
+          GOARCH=$(go env GOARCH)
+          GOOS=$(go env GOOS)
+          go build -v -ldflags "-s -w" -o "bin/ddt-${GOOS}-${GOARCH}" cmd/ddt/*.go
       - name: Upload Artifacts
         uses: actions/upload-artifact@master
         with:
