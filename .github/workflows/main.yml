@@ -19,14 +19,10 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go_version }}
-      - name: Setup go-task
-        uses: pnorton5432/setup-task@v1
-        with:
-          task-version: 3.38.0
       - name: Checkout code
         uses: actions/checkout@v4
       - name: Build Artifacts
-        run: task build
+        run: go build -v -ldflags "-s -w" -o "bin/ddt" cmd/ddt/*.go
       - name: Upload Artifacts
         uses: actions/upload-artifact@master
         with:
