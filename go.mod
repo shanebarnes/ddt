@@ -6,7 +6,6 @@ require (
 	github.com/dustin/go-humanize v1.0.0
 	github.com/shanebarnes/goto v0.0.0-20211222014533-51ad254d61cb
 	github.com/stretchr/testify v1.6.1
-	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56
 	v8.run/go/exp v0.0.25
 )
 

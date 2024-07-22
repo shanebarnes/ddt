@@ -2,9 +2,9 @@ package ddt
 
 import (
 	"io"
+	"math/rand/v2"
 	"time"
 
-	"golang.org/x/exp/rand"
 	"v8.run/go/exp/fastrand"
 )
 
