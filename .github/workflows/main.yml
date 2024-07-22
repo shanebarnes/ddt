@@ -15,7 +15,7 @@ jobs:
     runs-on: ${{ matrix.os_version }}
     steps:
       - name: Install Go
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go_version }}
       - name: Setup go-task
@@ -23,7 +23,7 @@ jobs:
         with:
           task-version: 3.38.0
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: Build Artifacts
         run: task build
       - name: Upload Artifacts
