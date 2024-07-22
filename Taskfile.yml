@@ -3,14 +3,18 @@ version: '3'
 tasks:
   default:
     cmds:
+      - task: benchmark
       - task: build
       - task: fmt
       - task: test
       - task: vet
 
+  benchmark:
+    cmds:
+      - go test -bench=. -count 3 
+
   build:
     cmds:
-      - export GOOS=$(go env GOOS)
       - go build -v -o "bin/ddt" cmd/ddt/*.go
 
   fmt:

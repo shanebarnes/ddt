@@ -18,10 +18,11 @@ func main() {
 	var (
 		blockSize      string
 		blockCount     int64
+		inMemoryFiles  bool
 		sourceFilename string
 		targetFilename string
-		rateLimit      string
 		shareFiles     bool
+		speedLimit     string
 		threadCount    int
 	)
 
@@ -29,8 +30,9 @@ func main() {
 	flag.Int64Var(&blockCount, "count", -1, "Copy only n input blocks")
 	flag.StringVar(&sourceFilename, "if", "", "Read input from file instead of the standard input")
 	flag.StringVar(&targetFilename, "of", "", "Write output to file instead of the standard output")
-	flag.StringVar(&rateLimit, "rate", "0", "Copy rate limit in bits per second")
+	flag.BoolVar(&inMemoryFiles, "mem", false, "Use fast in-memory implementations of special system files (/dev/random, /dev/urandom, /dev/zero, /dev/null)")
 	flag.BoolVar(&shareFiles, "share", false, "Share a single read and write file descriptor between threads")
+	flag.StringVar(&speedLimit, "speed", "0", "Limit the copying speed in bytes per second")
 	flag.IntVar(&threadCount, "threads", 1, "Number of copy threads")
 
 	flag.Parse()
@@ -40,12 +42,12 @@ func main() {
 		blockSizeInBytes = int64(f)
 	}
 
-	var rateLimitInBps uint64
-	if f, err := units.ToNumber(rateLimit); err == nil {
-		rateLimitInBps = uint64(f)
+	var speedLimitInBps uint64
+	if f, err := units.ToNumber(speedLimit); err == nil {
+		speedLimitInBps = uint64(f)
 	}
 
-	err := validateFlags(blockSizeInBytes, sourceFilename, targetFilename, threadCount)
+	err := validateFlags(blockSizeInBytes, sourceFilename, targetFilename, inMemoryFiles, shareFiles, threadCount)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Argument validation failed: %v\n\n", err)
 		flag.PrintDefaults()
@@ -67,36 +69,54 @@ func main() {
 	targetFilename, err = filepath.Abs(targetFilename)
 	exitIf("Failed to create output file", err)
 
-	err = os.MkdirAll(filepath.Dir(targetFilename), 0644)
-	exitIf("Failed to create output file", err)
+	if !inMemoryFiles {
+		err = os.MkdirAll(filepath.Dir(targetFilename), 0644)
+		exitIf("Failed to create output file", err)
+	}
 
 	workerInputCh := make(chan int64, threadCount)
 	workerOutputCh := make(chan *ddInfo, threadCount)
 
 	var (
-		source, target *os.File
-		wg             sync.WaitGroup
+		sourceFile, targetFile *os.File
+		source                 io.ReaderAt
+		target                 io.WriterAt
+		wg                     sync.WaitGroup
 	)
 
 	for i := 0; i < threadCount; i++ {
 		if i == 0 || !shareFiles {
-			source, err = os.OpenFile(sourceFilename, os.O_RDONLY, 0)
-			exitIf(fmt.Sprintf("Failed to open source file instance %d", i), err)
-			defer func() {
-				_ = source.Close()
-			}()
+			switch {
+			case inMemoryFiles && (sourceFilename == "/dev/random" || sourceFilename == "/dev/urandom"):
+				source = ddt.NewRandReader()
+			case inMemoryFiles && sourceFilename == "/dev/zero":
+				source = ddt.NewZeroReader()
+			default:
+				sourceFile, err = os.OpenFile(sourceFilename, os.O_RDONLY, 0)
+				exitIf(fmt.Sprintf("Failed to open source file instance %d", i), err)
+				defer func() {
+					_ = sourceFile.Close()
+				}()
+				source = sourceFile
+			}
 
-			target, err = os.OpenFile(targetFilename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-			exitIf(fmt.Sprintf("Failed to open target file instance %d", i), err)
-			defer func() {
-				_ = target.Close()
-			}()
+			switch {
+			case inMemoryFiles && targetFilename == "/dev/null":
+				target = ddt.NewNullWriter()
+			default:
+				targetFile, err = os.OpenFile(targetFilename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+				exitIf(fmt.Sprintf("Failed to open target file instance %d", i), err)
+				defer func() {
+					_ = targetFile.Close()
+				}()
+				target = targetFile
+			}
 		}
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			copyWorker(i, source, target, blockSizeInBytes, rateLimitInBps/(8*uint64(threadCount)), workerInputCh, workerOutputCh)
+			copyWorker(i, source, target, blockSizeInBytes, speedLimitInBps/(uint64(threadCount)), workerInputCh, workerOutputCh)
 		}()
 	}
 
@@ -187,7 +207,7 @@ func printStats(iteration int, sum *ddInfo, blocksCopied, blocksTotal int64, dur
 		units.ToMetricString(float64(rate*8), 3, "", "bps"))
 }
 
-func validateFlags(blockSizeInBytes int64, sourceFilename, targetFilename string, threadCount int) error {
+func validateFlags(blockSizeInBytes int64, sourceFilename, targetFilename string, inMemoryFiles, shareFiles bool, threadCount int) error {
 	switch {
 	case len(os.Args) < 2:
 		return fmt.Errorf("argc < 2")
@@ -199,12 +219,14 @@ func validateFlags(blockSizeInBytes int64, sourceFilename, targetFilename string
 		return fmt.Errorf("of == \"\"")
 	case threadCount < 1:
 		return fmt.Errorf("threads < 1")
+	case inMemoryFiles && shareFiles:
+		return fmt.Errorf("in-memory files cannot be shared")
 	default:
 		return nil
 	}
 }
 
-func copyWorker(id int, source, target *os.File, blockSize int64, maxRateInBytesPerSecond uint64, input <-chan int64, output chan<- *ddInfo) {
+func copyWorker(id int, source io.ReaderAt, target io.WriterAt, blockSize int64, maxRateInBytesPerSecond uint64, input <-chan int64, output chan<- *ddInfo) {
 	buf := make([]byte, blockSize)
 	limiter := tokenbucket.New(maxRateInBytesPerSecond, uint64(blockSize))
 
